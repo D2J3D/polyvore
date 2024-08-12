@@ -200,4 +200,24 @@ class PolyvoreModel(nn.Module):
         self.cap_mask = cap_mask
         self.set_ids = set_ids
 
-    def
+    def build_image_embeddings(self):
+        """Builds the image model subgraph and generates image embeddings
+              in visual semantic joint space and RNN prediction space.
+
+            Inputs:
+              self.images
+
+            Outputs:
+              self.image_embeddings
+              self.rnn_image_embeddings
+        """
+
+        # Reshape 5D image tensor
+        images = torch.reshape(self.images, [-1,
+                                             self.config.image_height,
+                                             self.config.image_width,
+                                             3])
+        inception_output = image_embedding.inception_v3(
+            images,
+            trainable=self.train_inception,
+            is_training=self.is_training())
