@@ -4,6 +4,7 @@ import torch.nn as nn
 from ops import image_embedding
 from ops import image_processing
 from ops import inputs as input_ops
+from ops.image_embedding_mapping import ImageEmbeddingMapper
 
 
 class PolyvoreModel(nn.Module):
@@ -61,8 +62,12 @@ class PolyvoreModel(nn.Module):
         # Image embeddings in the RNN output/prediction space.
         self.rnn_image_embeddings = None
 
+        # Mapper from inception output to embeddings
+        self.mapper = None
         # Word embedding map.
         self.embedding_map = None
+
+        self.initializer_scale = self.config.initializer_scale
 
         # A float32 scalar Tensor; the total loss for the trainer to optimize.
         self.total_loss = None
@@ -200,7 +205,7 @@ class PolyvoreModel(nn.Module):
         self.cap_mask = cap_mask
         self.set_ids = set_ids
 
-    def build_image_embeddings(self):
+    def _build_image_embeddings(self):
         """Builds the image model subgraph and generates image embeddings
               in visual semantic joint space and RNN prediction space.
 
@@ -221,3 +226,39 @@ class PolyvoreModel(nn.Module):
             images,
             trainable=self.train_inception,
             is_training=self.is_training())
+        self.mapper = ImageEmbeddingMapper(inception_output.shape[1], self.config.embedding_size)
+
+        with torch.no_grad():
+            image_embeddings = self.mapper(inception_output)
+            rnn_image_embeddings = self.mapper(inception_output)
+
+        self.image_embeddings = torch.reshape(image_embeddings,
+                                              [self.images.shape[0],
+                                               -1,
+                                               self.config.embedding_size])
+        self.rnn_image_embeddings = torch.reshape(rnn_image_embeddings,
+                                                  [self.images[0],
+                                                   -1,
+                                                   self.config.embedding_size])
+
+    def _build_seq_embeddings(self):
+        """Builds the input sequence embeddings.
+
+            Inputs:
+              self.input_seqs
+
+            Outputs:
+              self.seq_embeddings
+              self.embedding_map
+         """
+        embedding_map = torch.empty(self.config.vocab_size, self.config.embedding_size).uniform_(-self.initializer_scale, self.initializer_scale)
+        seq_embeddings = embedding_matrix[self.cap_seqs]
+        if self.mode != "inference":
+            seq_embeddings = torch.bmm(self.cap_mask.to('float').unsqueeze(2), seq_embeddings)
+            seq_embeddings = seq_embeddings.squeeze(dim=2)
+
+        self.embedding_map = embedding_map
+        self.seq_embeddings = seq_embeddings
+
+    def _build_model(self):
+        pass
