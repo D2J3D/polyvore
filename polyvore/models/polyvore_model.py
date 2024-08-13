@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from ops import image_embedding
 from ops import image_processing
@@ -15,98 +16,17 @@ class PolyvoreModel(nn.Module):
               mode: "train", "eval" or "inference".
               train_inception: Whether the inception submodel variables are trainable.
             """
-        super().__init__()
+        super(PolyvoreModel, self).__init__()
+        # Set essential parameters
         assert mode in ["train", "eval", "inference"]
         self.config = config
         self.mode = mode
         self.train_inception = train_inception
 
+        # Set device
         self.device_id = 0 if torch.cuda.is_available() else -1
         torch.cuda.set_device(self.device_id)
         self.device = torch.device(f'cuda:{self.device_id}' if self.device_id >= 0 else 'cpu')
-
-        # A float32 Tensor with shape
-        # [batch_size, num_images, height, width, channels].
-        # num_images is the number of images in one outfit, default is 8.
-        self.images = None
-
-        # Forward RNN input and target sequences.
-        # An int32 Tensor with shape [batch_size, padded_length].
-        self.f_input_seqs = None
-        # An int32 Tensor with shape [batch_size, padded_length].
-        self.f_target_seqs = None
-
-        # Backward RNN input and target sequences.
-        # An int32 Tensor with shape [batch_size, padded_length].
-        self.b_input_seqs = None
-        # An int32 Tensor with shape [batch_size, padded_length].
-        self.b_target_seqs = None
-
-        # An int32 0/1 Tensor with shape [batch_size, padded_length].
-        self.input_mask = None
-
-        # Image caption sequence and masks.
-        # An int32 Tensor with shape [batch_size, num_images, padded_length].
-        self.cap_seqs = None
-        # An int32 0/1 Tensor with shape [batch_size, padded_length].
-        self.cap_mask = None
-
-        # Caption sequence embeddings, we use simple bag of word model.
-        # A float32 Tensor with shape [batch_size, num_images, embedding_size].
-        self.seq_embeddings = None
-
-        # Image embeddings in the joint visual-semantic space
-        # A float32 Tensor with shape [batch_size, num_images, embedding_size].
-        self.image_embeddings = None
-
-        # Image embeddings in the RNN output/prediction space.
-        self.rnn_image_embeddings = None
-
-        # Mapper from inception output to embeddings
-        self.mapper = None
-        # Word embedding map.
-        self.embedding_map = None
-
-        self.initializer_scale = self.config.initializer_scale
-
-        # A float32 scalar Tensor; the total loss for the trainer to optimize.
-        self.total_loss = None
-
-        # Forward and backward RNN loss.
-        # A float32 Tensor with shape [batch_size * padded_length].
-        self.forward_losses = None
-        # A float32 Tensor with shape [batch_size * padded_length].
-        self.backward_losses = None
-        # RNN loss, forward + backward.
-        self.lstm_losses = None
-
-        # Loss mask for lstm loss.
-        self.loss_mask = None
-
-        # Visual Semantic Embedding loss.
-        # A float32 Tensor with shape [batch_size * padded_length].
-        self.emb_losses = None
-
-        # A float32 Tensor with shape [batch_size * padded_length].
-        self.target_weights = None
-
-        # Collection of variables from the inception submodel.
-        self.inception_variables = []
-
-        # Function to restore the inception submodel from checkpoint.
-        self.init_fn = None
-
-        # Global step Tensor.
-        self.global_step = None
-
-        # Some output for debugging purposes .
-        self.target_embeddings = None
-        self.input_embeddings = None
-        self.set_ids = None
-        self.f_lstm_state = None
-        self.b_lstm_state = None
-        self.lstm_output = None
-        self.lstm_xent_loss = None
 
     def _is_training(self):
         """Returns true if the model is built for training mode."""
@@ -198,19 +118,21 @@ class PolyvoreModel(nn.Module):
                                                  batch_size=self.config.batch_size,
                                                  queue_capacity=queue_capacity))
 
-        self.images = image_seqs
-        self.input_mask = input_mask
-        self.loss_mask = loss_mask
-        self.cap_seqs = cap_seqs
-        self.cap_mask = cap_mask
-        self.set_ids = set_ids
+        # self.images = image_seqs
+        # self.input_mask = input_mask
+        # self.loss_mask = loss_mask
+        # self.cap_seqs = cap_seqs
+        # self.cap_mask = cap_mask
+        # self.set_ids = set_ids
 
-    def _build_image_embeddings(self):
+        return image_seqs, input_mask, loss_mask, cap_seqs, cap_mask, set_ids
+
+    def _build_image_embeddings(self, images):
         """Builds the image model subgraph and generates image embeddings
               in visual semantic joint space and RNN prediction space.
 
             Inputs:
-              self.images
+              self.images (image_seqs)
 
             Outputs:
               self.image_embeddings
@@ -218,30 +140,32 @@ class PolyvoreModel(nn.Module):
         """
 
         # Reshape 5D image tensor
-        images = torch.reshape(self.images, [-1,
-                                             self.config.image_height,
-                                             self.config.image_width,
-                                             3])
+        images = torch.reshape(images, [-1,
+                                        self.config.image_height,
+                                        self.config.image_width,
+                                        3])
         inception_output = image_embedding.inception_v3(
             images,
             trainable=self.train_inception,
             is_training=self.is_training())
-        self.mapper = ImageEmbeddingMapper(inception_output.shape[1], self.config.embedding_size)
+        mapper = ImageEmbeddingMapper(inception_output.shape[1], self.config.embedding_size)
 
         with torch.no_grad():
-            image_embeddings = self.mapper(inception_output)
-            rnn_image_embeddings = self.mapper(inception_output)
+            image_embeddings = mapper(inception_output)
+            rnn_image_embeddings = mapper(inception_output)
 
-        self.image_embeddings = torch.reshape(image_embeddings,
-                                              [self.images.shape[0],
-                                               -1,
-                                               self.config.embedding_size])
-        self.rnn_image_embeddings = torch.reshape(rnn_image_embeddings,
-                                                  [self.images[0],
-                                                   -1,
-                                                   self.config.embedding_size])
+        image_embeddings = torch.reshape(image_embeddings,
+                                         [images.shape[0],
+                                          -1,
+                                          self.config.embedding_size])
+        rnn_image_embeddings = torch.reshape(rnn_image_embeddings,
+                                             [images[0],
+                                              -1,
+                                              self.config.embedding_size])
 
-    def _build_seq_embeddings(self):
+        return image_embeddings, rnn_image_embeddings
+
+    def _build_seq_embeddings(self, cap_seqs, cap_mask):
         """Builds the input sequence embeddings.
 
             Inputs:
@@ -251,14 +175,44 @@ class PolyvoreModel(nn.Module):
               self.seq_embeddings
               self.embedding_map
          """
-        embedding_map = torch.empty(self.config.vocab_size, self.config.embedding_size).uniform_(-self.initializer_scale, self.initializer_scale)
-        seq_embeddings = embedding_matrix[self.cap_seqs]
+        embedding_map = torch.empty(self.config.vocab_size, self.config.embedding_size).uniform_(
+            -self.config.initializer_scale, self.config.initializer_scale)
+        seq_embeddings = embedding_map[cap_seqs]
         if self.mode != "inference":
-            seq_embeddings = torch.bmm(self.cap_mask.to('float').unsqueeze(2), seq_embeddings)
+            seq_embeddings = torch.bmm(cap_mask.to('float').unsqueeze(2), seq_embeddings)
             seq_embeddings = seq_embeddings.squeeze(dim=2)
 
-        self.embedding_map = embedding_map
-        self.seq_embeddings = seq_embeddings
+        # self.embedding_map = embedding_map
+        # self.seq_embeddings = seq_embeddings
+
+        return embedding_map, seq_embeddings
+
+    def forward(self, image_embeddings, seq_embeddings):
+        """
+        Draft version working on prefetched embeddings.
+        """
+        norm_image_embeddings = F.normalize(image_embeddings, 2)
+        norm_seq_embeddings = F.normalize(seq_embeddings, 2)
+        padding_length = self.config.number_set_images - norm_seq_embeddings.size(1)
+        norm_seq_embeddings = torch.cat(
+            (norm_seq_embeddings, norm_seq_embeddings.new_zeros(norm_seq_embeddings.size(0), padding_length)), dim=1)
 
     def _build_model(self):
-        pass
+        """
+        Builds the model
+        """
+        norm_image_embeddings = F.normalize(self.image_embeddings, 2)
+        norm_seq_embeddings = F.normalize(self.seq_embeddings, 2)
+        padding_length = self.config.number_set_images - norm_seq_embeddings.size(1)
+        norm_seq_embeddings = torch.cat(
+            (norm_seq_embeddings, norm_seq_embeddings.new_zeros(norm_seq_embeddings.size(0), padding_length)), dim=1)
+        if self.mode == "inference":
+            pass
+        else:
+            # Compute losses for joint embedding.
+            # Only look at the captions that have length >= 2.
+            emb_loss_mask = torch.where(torch.sum(self.cap_mask, dim=2) > 1, True, False)
+            # Image mask is padded it to max length.
+            max_sequence_length = self.config.number_set_images
+            padding_length = max_sequence_length - emb_loss_mask.size(-1)
+            emb_loss_mask = torch.cat((emb_loss_mask, torch.zeros(emb_loss_mask.size(0), padding_length)), dim=-1)

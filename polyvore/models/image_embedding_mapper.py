@@ -16,7 +16,7 @@ class ImageEmbeddingMapper(nn.Module):
            fc (nn.Linear): The fully connected layer that maps the input to the output.
     """
     def __init__(self, inception_output_size, num_outputs):
-        super().__init__()
+        super(ImageEmbeddingMapper, self).__init__()
         self.input_size = inception_output_size
         self.num_outputs = num_outputs
         self.initializer = nn.init.xavier_uniform_
