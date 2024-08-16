@@ -5,18 +5,21 @@ import torch.nn.functional as F
 from ops import image_embedding
 from ops import image_processing
 from ops import inputs as input_ops
-from ops.image_embedding_mapping import ImageEmbeddingMapper
+
+from image_embedding_mapper import ImageEmbeddingMapper
+from loss.ContrastiveLoss import ContrastiveLoss
 
 
 class PolyvoreModel(nn.Module):
     def __init__(self, config, mode, train_inception=False):
-        """Basic setup.
+        """
+        Basic setup.
             Args:
               config: Object containing configuration parameters.
               mode: "train", "eval" or "inference".
               train_inception: Whether the inception submodel variables are trainable.
-            """
-        super(PolyvoreModel, self).__init__()
+        """
+        super().__init__()
         # Set essential parameters
         assert mode in ["train", "eval", "inference"]
         self.config = config
@@ -26,7 +29,24 @@ class PolyvoreModel(nn.Module):
         # Set device
         self.device_id = 0 if torch.cuda.is_available() else -1
         torch.cuda.set_device(self.device_id)
-        self.device = torch.device(f'cuda:{self.device_id}' if self.device_id >= 0 else 'cpu')
+        self.device = torch.device(
+            f'cuda:{self.device_id}' if self.device_id >= 0 else 'cpu')
+
+        # Model
+        # Forward LSTM.
+        self.f_lstm_cell = nn.LSTMCell(
+            input_size=self.config.word_vector_dim, hidden_size=self.config.num_lstm_units)
+        self.f_dropout = nn.Dropout(p=1-self.config.lstm_dropout_keep_prob)
+        
+        # Backward LSTM.
+        self.b_lstm_cell = nn.LSTMCell(
+            input_size=self.config.word_vector_dim, hidden_size=self.config.num_lstm_units)
+        self.b_dropout = nn.Dropout(p=1-self.config.lstm_dropout_keep_prob)
+
+        self.f_fc = nn.Linear(self.config.num_lstm_units,
+                              self.config.embedding_size)
+        self.b_fc = nn.Linear(self.config.num_lstm_units,
+                              self.config.embedding_size)
 
     def _is_training(self):
         """Returns true if the model is built for training mode."""
@@ -34,7 +54,6 @@ class PolyvoreModel(nn.Module):
 
     def _process_image(self, encoded_image, image_idx=0):
         """Decodes and processes an image string.
-
         Args:
           encoded_image: A scalar string Tensor; the encoded image.
           thread_id: Preprocessing thread id used to select the ordering of color
@@ -104,9 +123,11 @@ class PolyvoreModel(nn.Module):
 
                 images = []
                 for i in range(self.config.number_set_images):
-                    images.append(self.process_image(encoded_images[i], image_idx=i))
+                    images.append(self.process_image(
+                        encoded_images[i], image_idx=i))
 
-                images_and_captions.append([set_id, images, image_ids, captions, likes])
+                images_and_captions.append(
+                    [set_id, images, image_ids, captions, likes])
 
             # Batch inputs.
             queue_capacity = (5 * self.config.num_preprocess_threads *
@@ -117,13 +138,6 @@ class PolyvoreModel(nn.Module):
                 input_ops.batch_with_dynamic_pad(images_and_captions,
                                                  batch_size=self.config.batch_size,
                                                  queue_capacity=queue_capacity))
-
-        # self.images = image_seqs
-        # self.input_mask = input_mask
-        # self.loss_mask = loss_mask
-        # self.cap_seqs = cap_seqs
-        # self.cap_mask = cap_mask
-        # self.set_ids = set_ids
 
         return image_seqs, input_mask, loss_mask, cap_seqs, cap_mask, set_ids
 
@@ -148,7 +162,9 @@ class PolyvoreModel(nn.Module):
             images,
             trainable=self.train_inception,
             is_training=self.is_training())
-        mapper = ImageEmbeddingMapper(inception_output.shape[1], self.config.embedding_size)
+
+        mapper = ImageEmbeddingMapper(
+            inception_output.shape[1], self.config.embedding_size)
 
         with torch.no_grad():
             image_embeddings = mapper(inception_output)
@@ -166,24 +182,23 @@ class PolyvoreModel(nn.Module):
         return image_embeddings, rnn_image_embeddings
 
     def _build_seq_embeddings(self, cap_seqs, cap_mask):
-        """Builds the input sequence embeddings.
+        """
+        Builds the input sequence embeddings.
 
             Inputs:
               self.input_seqs
 
             Outputs:
-              self.seq_embeddings
-              self.embedding_map
+              seq_embeddings
+              embedding_map
          """
         embedding_map = torch.empty(self.config.vocab_size, self.config.embedding_size).uniform_(
             -self.config.initializer_scale, self.config.initializer_scale)
         seq_embeddings = embedding_map[cap_seqs]
         if self.mode != "inference":
-            seq_embeddings = torch.bmm(cap_mask.to('float').unsqueeze(2), seq_embeddings)
+            seq_embeddings = torch.bmm(cap_mask.to(
+                'float').unsqueeze(2), seq_embeddings)
             seq_embeddings = seq_embeddings.squeeze(dim=2)
-
-        # self.embedding_map = embedding_map
-        # self.seq_embeddings = seq_embeddings
 
         return embedding_map, seq_embeddings
 
@@ -191,28 +206,23 @@ class PolyvoreModel(nn.Module):
         """
         Draft version working on prefetched embeddings.
         """
-        norm_image_embeddings = F.normalize(image_embeddings, 2)
-        norm_seq_embeddings = F.normalize(seq_embeddings, 2)
-        padding_length = self.config.number_set_images - norm_seq_embeddings.size(1)
-        norm_seq_embeddings = torch.cat(
-            (norm_seq_embeddings, norm_seq_embeddings.new_zeros(norm_seq_embeddings.size(0), padding_length)), dim=1)
 
-    def _build_model(self):
-        """
-        Builds the model
-        """
-        norm_image_embeddings = F.normalize(self.image_embeddings, 2)
-        norm_seq_embeddings = F.normalize(self.seq_embeddings, 2)
-        padding_length = self.config.number_set_images - norm_seq_embeddings.size(1)
-        norm_seq_embeddings = torch.cat(
-            (norm_seq_embeddings, norm_seq_embeddings.new_zeros(norm_seq_embeddings.size(0), padding_length)), dim=1)
-        if self.mode == "inference":
-            pass
-        else:
-            # Compute losses for joint embedding.
-            # Only look at the captions that have length >= 2.
-            emb_loss_mask = torch.where(torch.sum(self.cap_mask, dim=2) > 1, True, False)
-            # Image mask is padded it to max length.
-            max_sequence_length = self.config.number_set_images
-            padding_length = max_sequence_length - emb_loss_mask.size(-1)
-            emb_loss_mask = torch.cat((emb_loss_mask, torch.zeros(emb_loss_mask.size(0), padding_length)), dim=-1)
+        # Normalize img and seq embeddings
+        norm_image_embeddings = F.normalize(
+            self.image_embeddings, dim=2, eps=1e-12)
+        norm_seq_embeddings = F.normalize(
+            self.seq_embeddings, dim=2, eps=1e-12)
+
+        # Apply padding to seq embeddings
+        num_paddings = max(0, self.config.number_set_images -
+                           norm_seq_embeddings.size(1))
+        if num_paddings > 0:
+            padding = torch.zeros((norm_seq_embeddings.size(0), num_paddings))
+            norm_seq_embeddings = torch.cat(
+                [norm_seq_embeddings, padding], dim=-1)
+
+        if self.mode != "inference":
+            norm_image_embeddings = norm_image_embeddings.view(
+                self.config.number_set_images * self.config.batch_size, self.config.embedding_size)
+            norm_seq_embeddings = norm_seq_embeddings.view(
+                self.config.number_set_images * self.config.batch_size, self.config.embedding_size)
