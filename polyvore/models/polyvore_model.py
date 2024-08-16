@@ -70,7 +70,8 @@ class PolyvoreModel(nn.Module):
                                               image_idx=image_idx)
 
     def _build_inputs(self):
-        """Input prefetching, preprocessing and batching.
+        """
+        Input prefetching, preprocessing and batching.
 
             Outputs:
               Inputs of the model.
