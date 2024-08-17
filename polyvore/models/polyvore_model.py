@@ -48,6 +48,8 @@ class PolyvoreModel(nn.Module):
         self.b_fc = nn.Linear(self.config.num_lstm_units,
                               self.config.embedding_size)
 
+        self.loss
+
     def _is_training(self):
         """Returns true if the model is built for training mode."""
         return self.mode == "train"
