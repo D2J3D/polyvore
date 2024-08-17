@@ -7,7 +7,7 @@ class ImageEmbeddingMapper(nn.Module):
        A PyTorch module that maps the output of the Inception model to an embedding space.
 
        Args:
-           inception_output_size (torch.Tensor): The size of output vector output from the Inception model.
+           inception_output_size (int): The size of output vector output from the Inception model.
            num_outputs (int): The size of the embedding space.
 
        Attributes:

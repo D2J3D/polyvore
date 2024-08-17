@@ -25,8 +25,8 @@ class ContrastiveLoss(nn.Module):
         cost_s = torch.clamp(self.emb_margin - diagonal + scores, min=0.0)
         cost_im = torch.clamp(self.emb_margin - diagonal.T + scores, min=0.0)
         
-        cost_s = cost_s - torch.diag(diagonal).diag()
-        cost_im = cost_im - torch.diag(diagonal).diag()
+        cost_s = cost_s - torch.diag(torch.diag(diagonal))
+        cost_im = cost_im - torch.diag(torch.diag(diagonal))
         
         emb_batch_loss = cost_s.sum() + cost_im.sum()
         emb_batch_loss /= (norm_seq_embeddings.size(0) ** 2)
