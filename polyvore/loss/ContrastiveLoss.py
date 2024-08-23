@@ -19,7 +19,7 @@ class ContrastiveLoss(nn.Module):
         Returns:
             contrastive_loss (torch.Tensor): The computed contrastive loss.
         """
-        scores = torch.mm(norm_seq_embeddings, norm_image_embeddings.T)
+        scores = torch.matmul(norm_seq_embeddings, norm_image_embeddings.T)
         diagonal = torch.diag(scores).unsqueeze(1)
         
         cost_s = torch.clamp(self.emb_margin - diagonal + scores, min=0.0)

@@ -42,7 +42,8 @@ class PolyvoreModel(nn.Module):
         self.b_lstm_cell = nn.LSTMCell(
             input_size=self.config.word_vector_dim, hidden_size=self.config.num_lstm_units)
         self.b_dropout = nn.Dropout(p=1-self.config.lstm_dropout_keep_prob)
-
+        
+        # Linear layers   
         self.f_fc = nn.Linear(self.config.num_lstm_units,
                               self.config.embedding_size)
         self.b_fc = nn.Linear(self.config.num_lstm_units,
