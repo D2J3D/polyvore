@@ -13,15 +13,50 @@
 # limitations under the License.
 # ==============================================================================
 
-"""Input operations converted from TensorFlow to PyTorch."""
+"""Input ops adapted for PyTorch."""
 
 import torch
-from torch.utils.data import Dataset, DataLoader
-import numpy as np
+import torch.nn as nn
+import torch.utils.data as data
+from torch.utils.data import DataLoader
 
-class SequenceExampleDataset(Dataset):
-    def __init__(self, data, set_id, image_feature, image_index, caption_feature, number_set_images):
-        self.data = data
+def parse_sequence_example(serialized, set_id, image_feature,
+                           image_index, caption_feature, number_set_images):
+    """Parses a serialized example into a set of images and captions.
+
+    Args:
+        serialized: Serialized example (as dict or other format).
+        set_id: Key for the set ID in the serialized data.
+        image_feature: Key prefix for image data in the serialized data.
+        image_index: Key for the image indices in the serialized data.
+        caption_feature: Key for caption data in the serialized data.
+        number_set_images: Number of images in a set.
+
+    Returns:
+        set_id: Set id of the outfit.
+        encoded_images: A list containing all encoded images in the outfit.
+        image_ids: Image ids of the items in the outfit.
+        captions: A tensor with dynamically specified length.
+        likes: Number of likes of the outfit.
+    """
+    context_features = {}
+    context_features[set_id] = serialized[set_id]
+    context_features['likes'] = serialized.get('likes', 0)
+    
+    encoded_images = []
+    for i in range(number_set_images):
+        image_key = f"{image_feature}/{i}"
+        encoded_images.append(serialized.get(image_key, ''))
+    
+    image_ids = serialized[image_index]
+    captions = torch.tensor(serialized[caption_feature], dtype=torch.int64)
+    
+    return context_features[set_id], encoded_images, image_ids, captions, context_features['likes']
+
+
+class CustomDataset(data.Dataset):
+    def __init__(self, serialized_data, set_id, image_feature, image_index, caption_feature, number_set_images):
+        self.data = serialized_data
         self.set_id = set_id
         self.image_feature = image_feature
         self.image_index = image_index
@@ -32,69 +67,29 @@ class SequenceExampleDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx):
-        item = self.data[idx]
-        set_id = item[self.set_id]
-        likes = item.get('likes', 0)
-
-        encoded_images = []
-        for i in range(self.number_set_images):
-            encoded_images.append(item.get(f'{self.image_feature}/{i}', ''))
-
-        captions = torch.tensor(item[self.caption_feature])
-        image_ids = torch.tensor(item[self.image_index])
-
-        return set_id, encoded_images, image_ids, captions, likes
+        serialized = self.data[idx]
+        return parse_sequence_example(serialized, self.set_id, self.image_feature,
+                                      self.image_index, self.caption_feature, self.number_set_images)
 
 
-def prefetch_input_data(file_pattern, is_training, batch_size, num_workers=1):
-    """Prefetches data for loading into PyTorch DataLoader."""
-    from glob import glob
+def batch_with_dynamic_pad(images_and_captions, batch_size, add_summaries=True):
+    """Batches input images and captions with dynamic padding.
 
-    data_files = []
-    for pattern in file_pattern.split(","):
-        data_files.extend(glob(pattern))
-    if not data_files:
-        raise FileNotFoundError(f"Found no input files matching {file_pattern}")
+    Args:
+        images_and_captions: A dataset with image and caption data.
+        batch_size: Batch size.
+        add_summaries: If true, add summaries.
+
+    Returns:
+        Batches of images, captions, masks, etc.
+    """
+    dataloader = DataLoader(images_and_captions, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+    return dataloader
+
+def collate_fn(batch):
+    set_ids, encoded_images, image_ids, captions, likes = zip(*batch)
+
+    captions_padded = nn.utils.rnn.pad_sequence(captions, batch_first=True, padding_value=0)
+    masks = (captions_padded != 0).long()
     
-    print(f"Prefetching values from {len(data_files)} files matching {file_pattern}")
-
-    dataset = SequenceExampleDataset(data=data_files, set_id="set_id", image_feature="image_feature", 
-                                     image_index="image_index", caption_feature="caption_feature", 
-                                     number_set_images=5)  # Adjust `number_set_images` based on your needs
-
-    data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=is_training, num_workers=num_workers)
-
-    return data_loader
-
-
-def batch_with_dynamic_pad(batch_data):
-    """Batch and pad sequences dynamically for PyTorch."""
-    # Unpack the batch data
-    set_ids, images, image_ids, captions, likes = zip(*batch_data)
-
-    # Calculate max lengths for padding
-    max_image_seq_length = max(len(ids) for ids in image_ids)
-    max_caption_length = max(len(caption) for caption in captions)
-
-    # Padding
-    padded_images = []
-    for img_set in images:
-        padded_set = [img for img in img_set]
-        while len(padded_set) < max_image_seq_length:
-            padded_set.append('')
-        padded_images.append(padded_set)
-
-    padded_captions = []
-    mask = []
-    for caption in captions:
-        pad_len = max_caption_length - len(caption)
-        padded_captions.append(torch.cat([caption, torch.zeros(pad_len, dtype=torch.long)]))
-        mask.append(torch.cat([torch.ones(len(caption)), torch.zeros(pad_len)]))
-
-    set_ids = torch.tensor(set_ids)
-    padded_images = torch.tensor(padded_images)
-    padded_captions = torch.stack(padded_captions)
-    mask = torch.stack(mask)
-    likes = torch.tensor(likes)
-
-    return set_ids, padded_images, padded_captions, mask, likes
+    return set_ids, encoded_images, image_ids, captions_padded, masks, likes
