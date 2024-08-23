@@ -1,69 +1,69 @@
+# Copyright 2016 The TensorFlow Authors. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+
+"""Image embedding operations using PyTorch."""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision.models as models
+from torchvision import models
 
 class InceptionV3Embedding(nn.Module):
     def __init__(self, 
                  trainable=True, 
-                 is_training=True, 
-                 weight_decay=0.00004, 
                  dropout_keep_prob=0.8, 
-                 use_batch_norm=True, 
-                 add_summaries=True):
+                 use_batch_norm=True):
         super(InceptionV3Embedding, self).__init__()
 
-        self.trainable = trainable
-        self.is_training = is_training
-        self.weight_decay = weight_decay
-        self.dropout_keep_prob = dropout_keep_prob
-        self.use_batch_norm = use_batch_norm
-        self.add_summaries = add_summaries
+        # Load pre-trained Inception V3 model
+        self.inception_v3 = models.inception_v3(pretrained=True)
 
-        # Load the pre-trained Inception V3 model
-        self.inception = models.inception_v3(weights=models.Inception_V3_Weights.IMAGENET1K_V1)
-
-        # Freeze the parameters if the model is not trainable
-        if not self.trainable:
-            for param in self.inception.parameters():
+        # Make layers trainable if specified
+        if not trainable:
+            for param in self.inception_v3.parameters():
                 param.requires_grad = False
 
-        # Replace the last fully connected layer with an identity layer
-        self.inception.fc = nn.Identity()
+        # Remove the default fully connected layer
+        self.inception_v3.fc = nn.Identity()
 
-        # Set the dropout layer
-        self.dropout = nn.Dropout(p=1 - self.dropout_keep_prob)
+        # Dropout layer
+        self.dropout = nn.Dropout(p=1 - dropout_keep_prob)
 
-        # Set batch normalization if required
+        # Use batch normalization if specified
+        self.use_batch_norm = use_batch_norm
         if self.use_batch_norm:
             self.batch_norm = nn.BatchNorm1d(2048, eps=0.001, momentum=0.9997)
-        else:
-            self.batch_norm = None
 
-    def forward(self, images):
-        # Forward pass through the Inception model
-        x = self.inception(images)
+    def forward(self, images, is_training=True):
+        # Set the model to train/eval mode
+        self.inception_v3.train(is_training)
 
-        # Extract only the logits from the InceptionOutputs
-        x = x.logits
+        # Forward pass through the InceptionV3 model
+        features = self.inception_v3(images)
 
         # Apply dropout
-        if self.is_training:
-            x = self.dropout(x)
+        if is_training:
+            features = self.dropout(features)
 
-        # Apply batch normalization
-        if self.batch_norm is not None:
-            x = self.batch_norm(x)
+        # Apply batch normalization if specified
+        if self.use_batch_norm:
+            features = self.batch_norm(features)
 
-        # Optionally add summaries for visualization (e.g., using TensorBoard)
-        if self.add_summaries:
-            self._add_summaries(x)
+        return features
 
-        return x
-
-    def _add_summaries(self, x):
-        # Example summary addition using TensorBoard or other logging mechanisms
-        # Replace with actual summary code if needed.
-        print(f"Summary of activations: {x}")
-
-
+# Example usage:
+# model = InceptionV3Embedding(trainable=True, dropout_keep_prob=0.8, use_batch_norm=True)
+# images = torch.randn(8, 3, 299, 299)  # Example input: batch of 8 images, 3 channels, 299x299 size
+# embeddings = model(images, is_training=True)

@@ -24,17 +24,13 @@ def distort_image(image):
     """Perform random distortions on an image.
 
     Args:
-        image: A PIL Image with shape [height, width, 3].
+        image: A PIL Image.
 
     Returns:
-        distorted_image: A PIL Image with shape [height, width, 3].
+        distorted_image: A PIL Image with random horizontal flip.
     """
-    # Randomly flip horizontally.
     transform = transforms.RandomHorizontalFlip(p=0.5)
-    image = transform(image)
-
-    return image
-
+    return transform(image)
 
 def process_image(encoded_image,
                   is_training,
@@ -54,40 +50,46 @@ def process_image(encoded_image,
         resize_height: If > 0, resize height before crop to final dimensions.
         resize_width: If > 0, resize width before crop to final dimensions.
         image_format: "jpeg" or "png".
-        image_idx: Image index of the image in an outfit.
+        image_idx: image index of the image in an outfit.
 
     Returns:
-        A Tensor of shape [3, height, width] with values in [-1, 1].
+        A float32 Tensor of shape [3, height, width] with values in [-1, 1].
 
     Raises:
         ValueError: If image_format is invalid.
     """
-    # Decode the image from a byte string.
-    if image_format.lower() not in ["jpeg", "png"]:
+    
+    # Decode image into a PIL Image
+    if image_format == "jpeg":
+        image = Image.open(io.BytesIO(encoded_image)).convert("RGB")
+    elif image_format == "png":
+        image = Image.open(io.BytesIO(encoded_image)).convert("RGB")
+    else:
         raise ValueError(f"Invalid image format: {image_format}")
 
-    image = Image.open(io.BytesIO(encoded_image))
-
-    # Convert the image to RGB (if needed) and to a float32 tensor.
+    # Define transforms
     transform_list = []
 
+    # Resize image
     if resize_height > 0 and resize_width > 0:
         transform_list.append(transforms.Resize((resize_height, resize_width)))
 
+    # Crop to final dimensions
     if is_training:
         transform_list.append(transforms.RandomCrop((height, width)))
-        transform_list.append(transforms.Lambda(distort_image))
     else:
         transform_list.append(transforms.CenterCrop((height, width)))
 
-    # Convert to tensor and normalize to [-1, 1]
-    transform_list.extend([
-        transforms.ToTensor(),  # Converts to [0, 1]
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])  # Converts to [-1, 1]
-    ])
+    # Apply random distortions
+    if is_training:
+        transform_list.append(transforms.RandomHorizontalFlip())
 
+    # Convert image to Tensor and normalize to [-1, 1]
+    transform_list.append(transforms.ToTensor())
+    transform_list.append(transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]))
+
+    # Apply transformations
     transform = transforms.Compose(transform_list)
     image = transform(image)
 
     return image
-
