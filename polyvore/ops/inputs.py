@@ -13,220 +13,83 @@
 # limitations under the License.
 # ==============================================================================
 
-"""Input ops."""
+"""Input ops adapted for PyTorch."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-
-import tensorflow as tf
-
+import torch
+import torch.nn as nn
+import torch.utils.data as data
+from torch.utils.data import DataLoader
 
 def parse_sequence_example(serialized, set_id, image_feature,
                            image_index, caption_feature, number_set_images):
-  """Parses a tensorflow.SequenceExample into a set of images and caption.
+    """Parses a serialized example into a set of images and captions.
 
-  Args:
-    serialized: A scalar string Tensor; a single serialized SequenceExample.
-    set_id: Name of SequenceExample context feature containing the id of
-      the outfit.
-    image_feature: Name of SequenceExample context feature containing image
-      data.
-    image_index: Name of SequenceExample feature list containing the index of
-      the item in the outfit.
-    caption_feature: Name of SequenceExample feature list containing integer
-      captions.
-    number_set_images: Number of images in an outfit.
-  Returns:
-    set_id: Set id of the outfit.
-    encoded_images: A string Tensor containing all JPEG encoded images
-      in the outfit.
-    image_ids: Image ids of the items in the outfit.
-    captions: A 2-D uint64 Tensor with dynamically specified length.
-    likes: Number of likes of the outfit. Hard coded name,
-      not used in our model.
-  """
-  
-  context_features = {}
-  context_features[set_id] = tf.FixedLenFeature([], dtype=tf.string)
-  context_features['likes'] = tf.FixedLenFeature([], dtype=tf.int64,
-                                                 default_value=0)
-  for i in range(number_set_images):
-    context_features[image_feature + '/' + str(i)] = tf.FixedLenFeature([],
-                                                         dtype=tf.string,
-                                                         default_value = '')
-            
-  context, sequence = tf.parse_single_sequence_example(
-      serialized,
-      context_features=context_features,
-      sequence_features={
-          image_index: tf.FixedLenSequenceFeature([], dtype=tf.int64),
-          caption_feature: tf.VarLenFeature(dtype=tf.int64),
-      })
-      
-  set_id = context[set_id]
-  likes = context['likes']
-  
-  encoded_images = []
-  for i in range(number_set_images):
-    encoded_images.append(context[image_feature + '/' + str(i)])
-  
-  captions = sequence[caption_feature]
-  captions = tf.sparse_tensor_to_dense(captions)
-  image_ids = sequence[image_index]
-  
-  return set_id, encoded_images, image_ids, captions, likes
+    Args:
+        serialized: Serialized example (as dict or other format).
+        set_id: Key for the set ID in the serialized data.
+        image_feature: Key prefix for image data in the serialized data.
+        image_index: Key for the image indices in the serialized data.
+        caption_feature: Key for caption data in the serialized data.
+        number_set_images: Number of images in a set.
 
-
-def prefetch_input_data(reader,
-                        file_pattern,
-                        is_training,
-                        batch_size,
-                        values_per_shard,
-                        input_queue_capacity_factor=16,
-                        num_reader_threads=1,
-                        shard_queue_name="filename_queue",
-                        value_queue_name="input_queue"):
-  """Prefetches string values from disk into an input queue.
-
-  In training the capacity of the queue is important because a larger queue
-  means better mixing of training examples between shards. The minimum number of
-  values kept in the queue is values_per_shard * input_queue_capacity_factor,
-  where input_queue_memory factor should be chosen to trade-off better mixing
-  with memory usage.
-
-  Args:
-    reader: Instance of tf.ReaderBase.
-    file_pattern: Comma-separated list of file patterns (e.g.
-        /tmp/train_data-?????-of-00100).
-    is_training: Boolean; whether prefetching for training or eval.
-    batch_size: Model batch size used to determine queue capacity.
-    values_per_shard: Approximate number of values per shard.
-    input_queue_capacity_factor: Minimum number of values to keep in the queue
-      in multiples of values_per_shard. See comments above.
-    num_reader_threads: Number of reader threads to fill the queue.
-    shard_queue_name: Name for the shards filename queue.
-    value_queue_name: Name for the values input queue.
-
-  Returns:
-    A Queue containing prefetched string values.
-  """
-  data_files = []
-  for pattern in file_pattern.split(","):
-    data_files.extend(tf.gfile.Glob(pattern))
-  if not data_files:
-    tf.logging.fatal("Found no input files matching %s", file_pattern)
-  else:
-    tf.logging.info("Prefetching values from %d files matching %s",
-                    len(data_files), file_pattern)
-
-  if is_training:
-    filename_queue = tf.train.string_input_producer(
-        data_files, shuffle=True, capacity=16, name=shard_queue_name)
-    min_queue_examples = values_per_shard * input_queue_capacity_factor
-    capacity = min_queue_examples + 100 * batch_size
-    values_queue = tf.RandomShuffleQueue(
-        capacity=capacity,
-        min_after_dequeue=min_queue_examples,
-        dtypes=[tf.string],
-        name="random_" + value_queue_name)
-  else:
-    filename_queue = tf.train.string_input_producer(
-        data_files, shuffle=False, capacity=1, name=shard_queue_name)
-    capacity = values_per_shard + 3 * batch_size
-    values_queue = tf.FIFOQueue(
-        capacity=capacity, dtypes=[tf.string], name="fifo_" + value_queue_name)
-
-  enqueue_ops = []
-  for _ in range(num_reader_threads):
-    _, value = reader.read(filename_queue)
-    enqueue_ops.append(values_queue.enqueue([value]))
-  tf.train.queue_runner.add_queue_runner(tf.train.queue_runner.QueueRunner(
-      values_queue, enqueue_ops))
-  tf.scalar_summary(
-      "queue/%s/fraction_of_%d_full" % (values_queue.name, capacity),
-      tf.cast(values_queue.size(), tf.float32) * (1. / capacity))
-
-  return values_queue
-
-
-def batch_with_dynamic_pad(images_and_captions,
-                           batch_size,
-                           queue_capacity,
-                           add_summaries=True):
-  """Batches input images and captions.
-
-  This function splits the caption into an input sequence and a target sequence,
-  where the target sequence is the input sequence right-shifted by 1. Input and
-  target sequences are batched and padded up to the maximum length of sequences
-  in the batch. A mask is created to distinguish real words from padding words.
-  Similar sequence processing is used for images in an outfit.
-  Example:
-    Actual captions in the batch ('-' denotes padded character):
-      [
-        [ 1 2 5 4 5 ],
-        [ 1 2 3 4 - ],
-        [ 1 2 3 - - ],
-      ]
-
-    input_seqs:
-      [
-        [ 1 2 3 4 ],
-        [ 1 2 3 - ],
-        [ 1 2 - - ],
-      ]
-
-    target_seqs:
-      [
-        [ 2 3 4 5 ],
-        [ 2 3 4 - ],
-        [ 2 3 - - ],
-      ]
-
-    mask:
-      [
-        [ 1 1 1 1 ],
-        [ 1 1 1 0 ],
-        [ 1 1 0 0 ],
-      ]
-
-  Args:
-    images_and_captions: A list of image and caption meta data
-    batch_size: Batch size.
-    queue_capacity: Queue capacity.
-    add_summaries: If true, add caption length summaries.
-
-  Returns:
-    Padded image, captions, masks, etc.
-  """
-  enqueue_list = []
-  for set_id, images, image_ids, captions, likes in images_and_captions:
-    image_seq_length = tf.shape(image_ids)[0]
-    input_length = tf.sub(image_seq_length, 0) # change 1 to 0
+    Returns:
+        set_id: Set id of the outfit.
+        encoded_images: A list containing all encoded images in the outfit.
+        image_ids: Image ids of the items in the outfit.
+        captions: A tensor with dynamically specified length.
+        likes: Number of likes of the outfit.
+    """
+    context_features = {}
+    context_features[set_id] = serialized[set_id]
+    context_features['likes'] = serialized.get('likes', 0)
     
-    cap_indicator = tf.cast(tf.not_equal(captions,
-                                         tf.zeros_like(captions)),
-                            tf.int32)
-    indicator = tf.ones(tf.expand_dims(input_length, 0), dtype=tf.int32)
-    loss_indicator = tf.ones(tf.expand_dims(image_seq_length, 0),
-                             dtype=tf.int32)
-    images = tf.pack(images)
+    encoded_images = []
+    for i in range(number_set_images):
+        image_key = f"{image_feature}/{i}"
+        encoded_images.append(serialized.get(image_key, ''))
     
-    enqueue_list.append([set_id, images, indicator, loss_indicator,
-                        image_ids, captions, cap_indicator, likes])
+    image_ids = serialized[image_index]
+    captions = torch.tensor(serialized[caption_feature], dtype=torch.int64)
+    
+    return context_features[set_id], encoded_images, image_ids, captions, context_features['likes']
 
-  (set_ids, images, mask, loss_mask, image_ids,
-    captions, cap_mask, likes) = tf.train.batch_join(enqueue_list,
-                                                     batch_size=batch_size,
-                                                     capacity=queue_capacity,
-                                                     dynamic_pad=True,
-                                                     name="batch_and_pad")
 
-  if add_summaries:
-    lengths = tf.add(tf.reduce_sum(mask, 1), 1)
-    tf.scalar_summary("caption_length/batch_min", tf.reduce_min(lengths))
-    tf.scalar_summary("caption_length/batch_max", tf.reduce_max(lengths))
-    tf.scalar_summary("caption_length/batch_mean", tf.reduce_mean(lengths))
+class CustomDataset(data.Dataset):
+    def __init__(self, serialized_data, set_id, image_feature, image_index, caption_feature, number_set_images):
+        self.data = serialized_data
+        self.set_id = set_id
+        self.image_feature = image_feature
+        self.image_index = image_index
+        self.caption_feature = caption_feature
+        self.number_set_images = number_set_images
 
-  return (set_ids, images, image_ids, mask, loss_mask, captions, cap_mask, likes)
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        serialized = self.data[idx]
+        return parse_sequence_example(serialized, self.set_id, self.image_feature,
+                                      self.image_index, self.caption_feature, self.number_set_images)
+
+
+def batch_with_dynamic_pad(images_and_captions, batch_size, add_summaries=True):
+    """Batches input images and captions with dynamic padding.
+
+    Args:
+        images_and_captions: A dataset with image and caption data.
+        batch_size: Batch size.
+        add_summaries: If true, add summaries.
+
+    Returns:
+        Batches of images, captions, masks, etc.
+    """
+    dataloader = DataLoader(images_and_captions, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+    return dataloader
+
+def collate_fn(batch):
+    set_ids, encoded_images, image_ids, captions, likes = zip(*batch)
+
+    captions_padded = nn.utils.rnn.pad_sequence(captions, batch_first=True, padding_value=0)
+    masks = (captions_padded != 0).long()
+    
+    return set_ids, encoded_images, image_ids, captions_padded, masks, likes

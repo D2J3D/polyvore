@@ -1,0 +1,2 @@
+python -m tests.inputs_test
+для запуска тестов из папки ops
