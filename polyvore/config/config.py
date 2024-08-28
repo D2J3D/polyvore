@@ -1,3 +1,6 @@
+from dataclasses import dataclass
+
+
 @dataclass
 class ModelConfig:
     """Sets the default model hyperparameters."""
@@ -27,7 +30,7 @@ class ModelConfig:
     vocab_size = 2757
 
     # Number of threads for image preprocessing.
-    num_preprocess_threads = 1 # potentially odd param
+    num_preprocess_threads = 1  # potentially odd param
 
     # File containing an Inception v3 checkpoint to initialize the variables
     # of the Inception model. Must be provided when starting training for the
@@ -43,17 +46,19 @@ class ModelConfig:
 
     # LSTM input and output dimensionality, respectively. embedding_size is also
     # the embedding size in the visual-semantic joint space.
-    embedding_size = 512 
-    num_lstm_units = 512 
+    embedding_size = 512
+    num_lstm_units = 512
 
     # If < 1.0, the dropout keep probability applied to LSTM variables.
     lstm_dropout_keep_prob = 0.7
 
     # Largest number of images in a fashion set.
     number_set_images = 8
-    
+
     # Margin for the embedding loss.
     emb_margin = 0.2
+
+    batch_size = 10
 
     # Balance factor of all losses.
     emb_loss_factor = 1.0  # VSE loss
@@ -74,7 +79,7 @@ class TrainingConfig:
     # Learning rate for the initial phase of training.
     # by the FLAGS in train.py
     initial_learning_rate = 0.2
-    
+
     learning_rate_decay_factor = 0.5
     num_epochs_per_decay = 2.0
 
